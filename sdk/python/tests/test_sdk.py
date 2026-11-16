@@ -174,6 +174,46 @@ class TestKairoPythonSDK(unittest.TestCase):
         data = self.client.get_run(run_id)
         self.assertEqual(data["status"], "failed")
 
+    def test_09_langchain_callback_handler(self):
+        try:
+            from kairo.langchain import KairoCallbackHandler
+        except ImportError:
+            self.skipTest("langchain-core not installed")
+
+        run = self.client.create_run(agent="lc-test-agent")
+        handler = KairoCallbackHandler(run=run)
+
+        # 1. Simulate on_llm_start
+        handler.on_llm_start({"name": "gemini"}, ["Compute 5 * 5"])
+
+        # 2. Simulate on_tool_start
+        handler.on_tool_start({"name": "calculator"}, '{"expression": "5 * 5"}')
+
+        # 3. Simulate on_tool_end
+        handler.on_tool_end("25")
+
+        # 4. Simulate on_llm_end
+        class MockGeneration:
+            text = "The answer is 25"
+
+        class MockLLMResult:
+            generations = [[MockGeneration()]]
+            llm_output = {"token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
+
+        handler.on_llm_end(MockLLMResult())
+        run.complete({"result": "25"})
+
+        # Verify all events recorded in Kairo
+        history = self.client.get_run(run.run_id)
+        self.assertEqual(history["status"], "completed")
+        event_types = [ev["event_type"] for ev in history["events"]]
+        self.assertIn("run.started", event_types)
+        self.assertIn("llm.request", event_types)
+        self.assertIn("tool.call", event_types)
+        self.assertIn("tool.result", event_types)
+        self.assertIn("llm.response", event_types)
+        self.assertIn("run.completed", event_types)
+
 
 if __name__ == "__main__":
     unittest.main()
