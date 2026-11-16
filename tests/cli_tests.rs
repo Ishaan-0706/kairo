@@ -138,3 +138,28 @@ fn test_cli_replay_command() {
     let _ = fs::remove_dir_all(dir);
 }
 
+#[test]
+fn test_cli_diff_command() {
+    let dir = temp_cli_dir("cli_diff");
+    let file_a = dir.join("run-diff-a.jsonl");
+    let file_b = dir.join("run-diff-b.jsonl");
+
+    let mut ra = Run::start_with_id("run-diff-a", &file_a, serde_json::json!({"v": 1})).unwrap();
+    ra.complete(serde_json::json!({"summary": "done A"})).unwrap();
+
+    let mut rb = Run::start_with_id("run-diff-b", &file_b, serde_json::json!({"v": 2})).unwrap();
+    rb.complete(serde_json::json!({"summary": "done B"})).unwrap();
+
+    let diff_cli = Cli {
+        dir: dir.clone(),
+        command: Commands::Diff {
+            run_a: "run-diff-a".to_string(),
+            run_b: "run-diff-b".to_string(),
+        },
+    };
+    assert!(run_cli(diff_cli).is_ok());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+

@@ -37,6 +37,13 @@ pub enum Commands {
         /// The unique ID of the run to replay
         run_id: String,
     },
+    /// Compare two execution runs and identify differences
+    Diff {
+        /// The first run ID (baseline reference)
+        run_a: String,
+        /// The second run ID (comparison target)
+        run_b: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -61,8 +68,10 @@ pub fn run_cli(cli: Cli) -> Result<(), String> {
         Commands::Runs => handle_runs(cli.dir),
         Commands::Inspect { run_id } => handle_inspect(cli.dir, &run_id),
         Commands::Replay { run_id } => handle_replay(cli.dir, &run_id),
+        Commands::Diff { run_a, run_b } => handle_diff(cli.dir, &run_a, &run_b),
     }
 }
+
 
 
 fn handle_run_start(dir: PathBuf, custom_id: Option<String>, agent: String) -> Result<(), String> {
@@ -243,6 +252,107 @@ fn handle_replay(dir: PathBuf, run_id: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+fn handle_diff(dir: PathBuf, run_a: &str, run_b: &str) -> Result<(), String> {
+    let report = crate::compare::compare_runs(&dir, run_a, run_b)?;
+
+    println!("Comparing Runs:");
+    println!(
+        "  Run A (baseline):   {} ({} events)",
+        report.run_id_a, report.total_events_a
+    );
+    println!(
+        "  Run B (comparison): {} ({} events)\n",
+        report.run_id_b, report.total_events_b
+    );
+
+    if report.is_identical {
+        println!("Outcome: IDENTICAL");
+        println!(
+            "  All {} events match semantically in order and payload.",
+            report.identical_count
+        );
+        println!("  (Volatile fields like generated IDs and timestamps differed, but execution is identical).");
+        return Ok(());
+    }
+
+    println!("Outcome: DIVERGENCE DETECTED");
+    if let Some(div) = &report.first_divergence {
+        println!("  First Divergence at Step {}:", div.step);
+        println!("    Reason: {}", div.reason);
+        if let (Some(ea), Some(eb)) = (&div.event_a_type, &div.event_b_type) {
+            println!("    Run A:  {ea:?}");
+            println!("    Run B:  {eb:?}");
+        }
+    }
+
+    println!("\nDiff Summary:");
+    println!(
+        "  Identical: {} | Modified: {} | Added: {} | Removed: {}\n",
+        report.identical_count, report.modified_count, report.added_count, report.removed_count
+    );
+
+    println!("Event Alignment Timeline:");
+    println!(
+        "  {:<3} {:<10} {:<10} {:<18} DETAILS",
+        "STS", "STEP A", "STEP B", "EVENT TYPE"
+    );
+    println!("  {}", "-".repeat(78));
+
+    for item in &report.items {
+        let step_a_str = item
+            .step_a
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let step_b_str = item
+            .step_b
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "-".to_string());
+
+        let (tag, type_name, detail) = match &item.kind {
+            crate::compare::DiffKind::Identical => {
+                let t = item
+                    .event_a
+                    .as_ref()
+                    .map(|e| format!("{:?}", e.event_type))
+                    .unwrap_or_default();
+                ("=", t, "".to_string())
+            }
+            crate::compare::DiffKind::Modified { field_differences } => {
+                let t = item
+                    .event_a
+                    .as_ref()
+                    .map(|e| format!("{:?}", e.event_type))
+                    .unwrap_or_default();
+                ("~", t, format!("MODIFIED [{}]", field_differences.join(", ")))
+            }
+            crate::compare::DiffKind::Removed => {
+                let t = item
+                    .event_a
+                    .as_ref()
+                    .map(|e| format!("{:?}", e.event_type))
+                    .unwrap_or_default();
+                ("-", t, "REMOVED (only in A)".to_string())
+            }
+            crate::compare::DiffKind::Added => {
+                let t = item
+                    .event_b
+                    .as_ref()
+                    .map(|e| format!("{:?}", e.event_type))
+                    .unwrap_or_default();
+                ("+", t, "ADDED (only in B)".to_string())
+            }
+        };
+
+        println!(
+            "  [{}] {:<10} {:<10} {:<18} {}",
+            tag, step_a_str, step_b_str, type_name, detail
+        );
+    }
+
+    Ok(())
+}
+
 
 
 
