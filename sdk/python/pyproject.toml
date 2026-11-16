@@ -1,0 +1,26 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "kairo"
+version = "0.1.0"
+description = "Git-like execution infrastructure for AI agents"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Kairo Contributors" }
+]
+keywords = ["ai-agents", "evaluation", "replay", "debugging", "version-control"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Ishaan-0706/kairo"
+Repository = "https://github.com/Ishaan-0706/kairo"
