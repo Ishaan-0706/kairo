@@ -245,5 +245,86 @@ fn test_cli_serve_argument_parsing() {
     }
 }
 
+#[test]
+fn test_cli_eval_commands() {
+    use kairo::cli::EvalCommands;
+    let dir = temp_cli_dir("eval_cli");
+    let runs_dir = dir.join("runs");
+    fs::create_dir_all(&runs_dir).unwrap();
+
+    // 1. Create baseline run (output: 42)
+    let base_file = runs_dir.join("run-eval-base.jsonl");
+    let mut base_run = Run::start_with_id("run-eval-base", &base_file, json!({"agent": "calc-agent", "metadata": {"goal": "compute 42"}})).unwrap();
+    base_run.record(EventType::ToolStarted, json!({"tool": "calculator"})).unwrap();
+    base_run.complete(json!({"result": 42})).unwrap();
+
+    // 2. Create candidate run (output: 99 - regressed)
+    let cand_file = runs_dir.join("run-eval-cand.jsonl");
+    let mut cand_run = Run::start_with_id("run-eval-cand", &cand_file, json!({"agent": "calc-agent"})).unwrap();
+    cand_run.record(EventType::ToolStarted, json!({"tool": "calculator"})).unwrap();
+    cand_run.complete(json!({"result": 99})).unwrap();
+
+    // 3. CLI eval create
+    let create_cli = Cli {
+        dir: runs_dir.clone(),
+        command: Commands::Eval {
+            command: EvalCommands::Create {
+                run_id: "run-eval-base".to_string(),
+                id: Some("case-calc".to_string()),
+                name: Some("Calculator Goal".to_string()),
+            },
+        },
+    };
+    assert!(run_cli(create_cli).is_ok());
+
+    // 4. CLI eval list
+    let list_cli = Cli {
+        dir: runs_dir.clone(),
+        command: Commands::Eval {
+            command: EvalCommands::List,
+        },
+    };
+    assert!(run_cli(list_cli).is_ok());
+
+    // 5. CLI eval check on baseline (passes)
+    let check_base_cli = Cli {
+        dir: runs_dir.clone(),
+        command: Commands::Eval {
+            command: EvalCommands::Check {
+                case_id: "case-calc".to_string(),
+                run_id: "run-eval-base".to_string(),
+            },
+        },
+    };
+    assert!(run_cli(check_base_cli).is_ok());
+
+    // 6. CLI eval check on candidate (executes and handles mismatch)
+    let check_cand_cli = Cli {
+        dir: runs_dir.clone(),
+        command: Commands::Eval {
+            command: EvalCommands::Check {
+                case_id: "case-calc".to_string(),
+                run_id: "run-eval-cand".to_string(),
+            },
+        },
+    };
+    assert!(run_cli(check_cand_cli).is_ok());
+
+    // 7. CLI eval regress (compares baseline and candidate, finds regression)
+    let regress_cli = Cli {
+        dir: runs_dir.clone(),
+        command: Commands::Eval {
+            command: EvalCommands::Regress {
+                baseline: "run-eval-base".to_string(),
+                candidate: "run-eval-cand".to_string(),
+                case_id: "case-calc".to_string(),
+            },
+        },
+    };
+    assert!(run_cli(regress_cli).is_ok());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
 
 

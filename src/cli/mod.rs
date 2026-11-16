@@ -75,6 +75,45 @@ pub enum Commands {
         #[arg(short, long, default_value_t = 3000)]
         port: u16,
     },
+    /// Manage evaluation test cases and run benchmarks
+    Eval {
+        #[command(subcommand)]
+        command: EvalCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EvalCommands {
+    /// Create an evaluation case from an existing recorded run
+    Create {
+        /// The run ID to convert into an evaluation test case
+        run_id: String,
+        /// Optional custom evaluation case ID
+        #[arg(short, long)]
+        id: Option<String>,
+        /// Human-readable name for the evaluation case
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+    /// List all saved evaluation test cases
+    List,
+    /// Evaluate a recorded run against an evaluation test case
+    Check {
+        /// The evaluation case ID to evaluate against
+        case_id: String,
+        /// The run ID to evaluate
+        run_id: String,
+    },
+    /// Compare candidate run against baseline run to detect regressions
+    Regress {
+        /// The baseline run ID (reference)
+        baseline: String,
+        /// The candidate run ID to test for regressions
+        candidate: String,
+        /// The evaluation case ID
+        #[arg(short, long)]
+        case_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -129,6 +168,148 @@ pub fn run_cli(cli: Cli) -> Result<(), String> {
         } => handle_branch(cli.dir, &checkpoint_id, id, note),
         Commands::Lineage { run_id } => handle_lineage(cli.dir, &run_id),
         Commands::Serve { host, port } => handle_serve(cli.dir, &host, port),
+        Commands::Eval { command } => handle_eval(cli.dir, command),
+    }
+}
+
+fn handle_eval(dir: PathBuf, command: EvalCommands) -> Result<(), String> {
+    use crate::eval::{evaluate_run, EvalCase, EvalReport, RegressionReport};
+
+    let eval_base = if dir.ends_with("runs") {
+        dir.parent().unwrap_or(&dir).to_path_buf()
+    } else {
+        dir.clone()
+    };
+
+    match command {
+        EvalCommands::Create { run_id, id, name } => {
+            let run_path = Run::find_path(&dir, &run_id)
+                .ok_or_else(|| format!("Run '{run_id}' not found in '{}'", dir.display()))?;
+
+            let events = JsonlStorage::read_events(&run_path)
+                .map_err(|e| format!("Failed to read run events: {e}"))?;
+
+            let mut case = EvalCase::from_run(&run_id, &events)?;
+            if let Some(custom_id) = id {
+                case.id = custom_id;
+            }
+            if let Some(custom_name) = name {
+                case.name = custom_name;
+            }
+
+            let saved_path = case.save_to_dir(&eval_base)?;
+
+            println!("Created Evaluation Case:");
+            println!("  Case ID:       {}", case.id);
+            println!("  Name:          {}", case.name);
+            println!("  Source Run:    {}", run_id);
+            println!("  Input:         {}", case.input);
+            println!("  Expected:      {}", case.expected.output_matcher.display_expected());
+            if !case.expected.required_tools.is_empty() {
+                println!("  Tools:         {}", case.expected.required_tools.join(", "));
+            }
+            println!("  Saved To:      {}", saved_path.display());
+            Ok(())
+        }
+        EvalCommands::List => {
+            let cases = EvalCase::list_cases(&eval_base)?;
+            if cases.is_empty() {
+                println!("No evaluation cases found in '{}'.", eval_base.display());
+                return Ok(());
+            }
+
+            println!("Evaluation Cases ({}):", cases.len());
+            println!(
+                "  {:<24} {:<32} {:<24}",
+                "CASE ID", "NAME", "EXPECTED OUTPUT"
+            );
+            println!("  {}", "-".repeat(82));
+
+            for c in cases {
+                println!(
+                    "  {:<24} {:<32} {:<24}",
+                    c.id,
+                    c.name,
+                    c.expected.output_matcher.display_expected()
+                );
+            }
+            Ok(())
+        }
+        EvalCommands::Check { case_id, run_id } => {
+            let cases = EvalCase::list_cases(&eval_base)?;
+            let case = cases
+                .into_iter()
+                .find(|c| c.id == case_id)
+                .ok_or_else(|| format!("Evaluation case '{case_id}' not found"))?;
+
+            let run_path = Run::find_path(&dir, &run_id)
+                .ok_or_else(|| format!("Run '{run_id}' not found in '{}'", dir.display()))?;
+
+            let events = JsonlStorage::read_events(&run_path)
+                .map_err(|e| format!("Failed to read run events: {e}"))?;
+
+            let result = evaluate_run(&case, &run_id, &events);
+
+            println!("============================================================");
+            println!("                 KAIRO EVALUATION RESULT                    ");
+            println!("============================================================");
+            println!("  Case ID:       {}", result.case_id);
+            println!("  Run ID:        {}", result.run_id);
+            if result.passed {
+                println!("  Result:        [PASS]");
+            } else {
+                println!("  Result:        [FAIL]");
+            }
+            println!("  Actual Output: {}", result.actual_output);
+            println!("  Duration:      {} ms", result.duration_ms);
+
+            if let Some(ref tu) = result.token_usage {
+                let total = tu.total_tokens.unwrap_or(0);
+                println!("  Token Usage:   {} total (prompt: {:?}, completion: {:?})", total, tu.prompt_tokens, tu.completion_tokens);
+            } else {
+                println!("  Token Usage:   Not supplied by provider");
+            }
+
+            if !result.failures.is_empty() {
+                println!("  Failures:");
+                for f in &result.failures {
+                    println!("    - {f}");
+                }
+            }
+            println!("============================================================");
+            Ok(())
+        }
+        EvalCommands::Regress {
+            baseline,
+            candidate,
+            case_id,
+        } => {
+            let cases = EvalCase::list_cases(&eval_base)?;
+            let case = cases
+                .into_iter()
+                .find(|c| c.id == case_id)
+                .ok_or_else(|| format!("Evaluation case '{case_id}' not found"))?;
+
+            let base_path = Run::find_path(&dir, &baseline)
+                .ok_or_else(|| format!("Baseline run '{baseline}' not found"))?;
+            let cand_path = Run::find_path(&dir, &candidate)
+                .ok_or_else(|| format!("Candidate run '{candidate}' not found"))?;
+
+            let base_events = JsonlStorage::read_events(&base_path)
+                .map_err(|e| format!("Failed to read baseline events: {e}"))?;
+            let cand_events = JsonlStorage::read_events(&cand_path)
+                .map_err(|e| format!("Failed to read candidate events: {e}"))?;
+
+            let base_res = evaluate_run(&case, &baseline, &base_events);
+            let cand_res = evaluate_run(&case, &candidate, &cand_events);
+
+            let base_report = EvalReport::new(format!("eval-{baseline}"), vec![base_res]);
+            let cand_report = EvalReport::new(format!("eval-{candidate}"), vec![cand_res]);
+
+            let reg_report = RegressionReport::compare(&base_report, &cand_report);
+            print!("{}", reg_report.format_cli());
+            Ok(())
+        }
     }
 }
 
