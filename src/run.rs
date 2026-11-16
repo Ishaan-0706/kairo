@@ -78,6 +78,16 @@ impl From<StorageError> for RunError {
     }
 }
 
+/// Lightweight overview of a persisted run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub status: RunStatus,
+    pub start_time: String,
+    pub event_count: usize,
+    pub path: PathBuf,
+}
+
 /// Manages the lifecycle and event recording for an individual execution run.
 pub struct Run {
     run_id: String,
@@ -103,6 +113,12 @@ impl Run {
         let run_id = run_id.into();
         let storage_path = storage_path.into();
 
+        if let Some(parent) = storage_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| RunError::Storage(StorageError::Io(e)))?;
+            }
+        }
+
         let start_event = Event::new(&run_id, EventType::RunStarted, payload);
         JsonlStorage::append_event(&storage_path, &start_event)?;
 
@@ -111,6 +127,80 @@ impl Run {
             status: RunStatus::Running,
             storage_path,
         })
+    }
+
+    /// Lists summaries of all runs found in the given directory.
+    /// Returns Ok(empty) if the directory does not exist or is empty.
+    pub fn list(runs_dir: impl AsRef<Path>) -> Result<Vec<RunSummary>, StorageError> {
+        let dir = runs_dir.as_ref();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut summaries = Vec::new();
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                if let Ok(events) = JsonlStorage::read_events(&path) {
+                    if !events.is_empty() {
+                        let first = &events[0];
+                        let mut status = RunStatus::Running;
+                        for ev in events.iter().skip(1) {
+                            match ev.event_type {
+                                EventType::RunCompleted => status = RunStatus::Completed,
+                                EventType::RunFailed => status = RunStatus::Failed,
+                                _ => {}
+                            }
+                        }
+                        summaries.push(RunSummary {
+                            run_id: first.run_id.clone(),
+                            status,
+                            start_time: first.timestamp.clone(),
+                            event_count: events.len(),
+                            path,
+                        });
+                    }
+                }
+            }
+        }
+
+        summaries.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+        Ok(summaries)
+    }
+
+    /// Finds the file path associated with a run ID in the specified directory.
+    pub fn find_path(runs_dir: impl AsRef<Path>, run_id: &str) -> Option<PathBuf> {
+        let dir = runs_dir.as_ref();
+        if !dir.exists() {
+            return None;
+        }
+
+        // Direct path check: <dir>/<run_id>.jsonl
+        let direct = dir.join(format!("{run_id}.jsonl"));
+        if direct.exists() {
+            return Some(direct);
+        }
+
+        // Fallback scan: read first event in every .jsonl file in the directory
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                    if let Ok(events) = JsonlStorage::read_events(&path) {
+                        if events.first().map(|e| e.run_id.as_str()) == Some(run_id) {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Reconstructs a run from an existing JSONL event log file.
@@ -396,5 +486,39 @@ mod tests {
 
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn test_list_and_find_runs() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("kairo_test_dir_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1. Missing directory listing returns empty without error
+        let missing_dir = dir.join("nonexistent_subfolder");
+        let empty_list = Run::list(&missing_dir).unwrap();
+        assert!(empty_list.is_empty());
+
+        // 2. Start two runs in the directory
+        let file1 = dir.join("run-1.jsonl");
+        let file2 = dir.join("run-2.jsonl");
+
+        let mut r1 = Run::start_with_id("run-1", &file1, json!({"agent": "a1"})).unwrap();
+        r1.record(EventType::ToolStarted, json!({})).unwrap();
+        r1.complete(json!({})).unwrap();
+
+        let _r2 = Run::start_with_id("run-2", &file2, json!({"agent": "a2"})).unwrap();
+
+        // 3. List runs should find both runs
+        let runs = Run::list(&dir).unwrap();
+        assert_eq!(runs.len(), 2);
+
+        // 4. Find path should locate existing runs and return None for unknown run ID
+        assert_eq!(Run::find_path(&dir, "run-1"), Some(file1));
+        assert_eq!(Run::find_path(&dir, "run-2"), Some(file2));
+        assert_eq!(Run::find_path(&dir, "run-unknown-999"), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+
 
