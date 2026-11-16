@@ -65,6 +65,16 @@ pub enum Commands {
         /// The run ID to inspect
         run_id: String,
     },
+    /// Start the Kairo HTTP API server for SDK integration
+    Serve {
+        /// Host address to bind the HTTP server to
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Port to bind the HTTP server to
+        #[arg(short, long, default_value_t = 3000)]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -118,7 +128,17 @@ pub fn run_cli(cli: Cli) -> Result<(), String> {
             note,
         } => handle_branch(cli.dir, &checkpoint_id, id, note),
         Commands::Lineage { run_id } => handle_lineage(cli.dir, &run_id),
+        Commands::Serve { host, port } => handle_serve(cli.dir, &host, port),
     }
+}
+
+fn handle_serve(dir: PathBuf, host: &str, port: u16) -> Result<(), String> {
+    use crate::server::HttpServer;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create storage directory '{}': {e}", dir.display()))?;
+    let addr = format!("{host}:{port}");
+    let server = HttpServer::new(dir, addr);
+    server.run().map_err(|e| format!("Server error: {e}"))
 }
 
 

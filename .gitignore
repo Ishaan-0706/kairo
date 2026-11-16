@@ -1,3 +1,5 @@
 /target
 *.jsonl
 .kairo/
+__pycache__/
+*.pyc

@@ -221,5 +221,29 @@ fn test_cli_checkpoint_branch_and_lineage_commands() {
     let _ = fs::remove_dir_all(dir);
 }
 
+#[test]
+fn test_cli_serve_argument_parsing() {
+    use clap::Parser;
+    let cli = Cli::try_parse_from([
+        "kairo",
+        "--dir",
+        "custom/runs",
+        "serve",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+    ])
+    .unwrap();
+    assert_eq!(cli.dir, PathBuf::from("custom/runs"));
+    match cli.command {
+        Commands::Serve { host, port } => {
+            assert_eq!(host, "0.0.0.0");
+            assert_eq!(port, 8080);
+        }
+        _ => panic!("Expected Commands::Serve"),
+    }
+}
+
 
 

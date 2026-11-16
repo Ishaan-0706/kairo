@@ -4,5 +4,6 @@ pub mod compare;
 pub mod event;
 pub mod replay;
 pub mod run;
+pub mod server;
 pub mod storage;
 
