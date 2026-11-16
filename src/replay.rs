@@ -134,6 +134,12 @@ impl ReplayEngine {
         self.events.len()
     }
 
+    /// Peeks at the next recorded event without advancing the cursor.
+    pub fn peek_current(&self) -> Option<&Event> {
+        self.events.get(self.cursor)
+    }
+
+
     /// Verifies the next event in the stream matches the expected type and optional payload.
     /// Advances the cursor upon a successful match.
     pub fn verify_step(

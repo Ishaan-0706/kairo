@@ -167,19 +167,72 @@ fn handle_replay(dir: PathBuf, run_id: &str) -> Result<(), String> {
     let path = Run::find_path(&dir, run_id)
         .ok_or_else(|| format!("Run '{run_id}' not found in '{}'", dir.display()))?;
 
-    let replay = crate::replay::ReplayEngine::from_file(&path)
+    let mut replay = crate::replay::ReplayEngine::from_file(&path)
         .map_err(|e| format!("Failed to load replay engine: {e}"))?;
 
     println!("Starting replay of run '{}'...", replay.run_id());
     println!("  Log Path:              {}", path.display());
-    println!("  Total Recorded Events: {}", replay.total_events());
+    println!("  Total Recorded Events: {}\n", replay.total_events());
+
+    // Step through the recorded events in sequence
+    let total = replay.total_events();
+    while replay.cursor() < total {
+        let current_index = replay.cursor();
+        let next_event = replay.peek_current().cloned();
+
+        match next_event {
+            Some(ev) => match ev.event_type {
+                EventType::LlmRequest => {
+                    print!("  [{}] Replaying LLM request...", current_index + 1);
+                    match replay.replay_llm(&ev.payload) {
+                        Ok(resp) => {
+                            println!(" (ok)");
+                            println!("      -> Saved response: {}", resp);
+                        }
+                        Err(div) => {
+                            println!(" (diverged)");
+                            eprintln!("  [DIVERGENCE] {div}");
+                            break;
+                        }
+                    }
+                }
+                EventType::ToolStarted => {
+                    print!("  [{}] Replaying tool call...", current_index + 1);
+                    match replay.replay_tool(&ev.payload) {
+                        Ok((_type, output)) => {
+                            println!(" (ok - side effects skipped)");
+                            println!("      -> Saved output: {}", output);
+                        }
+                        Err(div) => {
+                            println!(" (diverged)");
+                            eprintln!("  [DIVERGENCE] {div}");
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    let type_label = format!("{:?}", ev.event_type);
+                    print!("  [{}] Step {:<18}", current_index + 1, type_label);
+                    match replay.verify_step(ev.event_type, Some(&ev.payload)) {
+                        Ok(_) => println!(" (ok)"),
+                        Err(div) => {
+                            println!(" (diverged)");
+                            eprintln!("  [DIVERGENCE] {div}");
+                            break;
+                        }
+                    }
+                }
+            },
+            None => break,
+        }
+    }
 
     let report = replay.finish();
     if report.is_success() {
         println!("\nReplay Succeeded!");
         println!(
             "  Validated {}/{} events without external side-effects.",
-            report.total_recorded_events, report.total_recorded_events
+            report.matched_events, report.total_recorded_events
         );
         println!("  All recorded LLM and tool responses verified for offline replay.");
     } else {
@@ -190,5 +243,6 @@ fn handle_replay(dir: PathBuf, run_id: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
 
 
