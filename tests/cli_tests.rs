@@ -116,3 +116,25 @@ fn test_cli_missing_data_directory_handled_safely() {
     let inspect_res = run_cli(inspect_cli);
     assert!(inspect_res.is_err());
 }
+
+#[test]
+fn test_cli_replay_command() {
+    let dir = temp_cli_dir("cli_replay");
+    let run_file = dir.join("run-to-replay.jsonl");
+
+    // Record a small run
+    let mut run = Run::start_with_id("run-to-replay", &run_file, serde_json::json!({"agent": "bot"})).unwrap();
+    run.complete(serde_json::json!({"status": "done"})).unwrap();
+
+    // Replay it via CLI
+    let replay_cli = Cli {
+        dir: dir.clone(),
+        command: Commands::Replay {
+            run_id: "run-to-replay".to_string(),
+        },
+    };
+    assert!(run_cli(replay_cli).is_ok());
+
+    let _ = fs::remove_dir_all(dir);
+}
+

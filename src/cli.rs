@@ -32,6 +32,11 @@ pub enum Commands {
         /// The unique ID of the run to inspect
         run_id: String,
     },
+    /// Replay a previously recorded run without contacting external services
+    Replay {
+        /// The unique ID of the run to replay
+        run_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -55,8 +60,10 @@ pub fn run_cli(cli: Cli) -> Result<(), String> {
         },
         Commands::Runs => handle_runs(cli.dir),
         Commands::Inspect { run_id } => handle_inspect(cli.dir, &run_id),
+        Commands::Replay { run_id } => handle_replay(cli.dir, &run_id),
     }
 }
+
 
 fn handle_run_start(dir: PathBuf, custom_id: Option<String>, agent: String) -> Result<(), String> {
     let run_id = custom_id.unwrap_or_else(|| format!("run-{}", uuid::Uuid::new_v4()));
@@ -155,3 +162,33 @@ fn handle_inspect(dir: PathBuf, run_id: &str) -> Result<(), String> {
 
     Ok(())
 }
+
+fn handle_replay(dir: PathBuf, run_id: &str) -> Result<(), String> {
+    let path = Run::find_path(&dir, run_id)
+        .ok_or_else(|| format!("Run '{run_id}' not found in '{}'", dir.display()))?;
+
+    let replay = crate::replay::ReplayEngine::from_file(&path)
+        .map_err(|e| format!("Failed to load replay engine: {e}"))?;
+
+    println!("Starting replay of run '{}'...", replay.run_id());
+    println!("  Log Path:              {}", path.display());
+    println!("  Total Recorded Events: {}", replay.total_events());
+
+    let report = replay.finish();
+    if report.is_success() {
+        println!("\nReplay Succeeded!");
+        println!(
+            "  Validated {}/{} events without external side-effects.",
+            report.total_recorded_events, report.total_recorded_events
+        );
+        println!("  All recorded LLM and tool responses verified for offline replay.");
+    } else {
+        println!("\nReplay Divergence Detected:");
+        for div in &report.divergences {
+            println!("  - {div}");
+        }
+    }
+    Ok(())
+}
+
+
