@@ -44,7 +44,49 @@ pub enum Commands {
         /// The second run ID (comparison target)
         run_b: String,
     },
+    /// Manage checkpoints pinned to execution states
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommands,
+    },
+    /// Branch a new execution run from an existing checkpoint
+    Branch {
+        /// The checkpoint ID to branch from
+        checkpoint_id: String,
+        /// Optional custom run identifier for the new branch
+        #[arg(short, long)]
+        id: Option<String>,
+        /// Optional branch description or reason
+        #[arg(short, long, default_value = "branch from checkpoint")]
+        note: String,
+    },
+    /// Inspect execution lineage and ancestor chain of a run
+    Lineage {
+        /// The run ID to inspect
+        run_id: String,
+    },
 }
+
+#[derive(Subcommand, Debug)]
+pub enum CheckpointCommands {
+    /// Create a checkpoint at a specific event step in a run
+    Create {
+        /// The run ID to checkpoint
+        run_id: String,
+        /// The 1-based event step number
+        step: usize,
+        /// Human-readable label for the checkpoint
+        #[arg(short, long, default_value = "checkpoint")]
+        name: String,
+    },
+    /// List all recorded checkpoints
+    List {
+        /// Optional run ID filter
+        #[arg(short, long)]
+        run_id: Option<String>,
+    },
+}
+
 
 #[derive(Subcommand, Debug)]
 pub enum RunCommands {
@@ -69,8 +111,16 @@ pub fn run_cli(cli: Cli) -> Result<(), String> {
         Commands::Inspect { run_id } => handle_inspect(cli.dir, &run_id),
         Commands::Replay { run_id } => handle_replay(cli.dir, &run_id),
         Commands::Diff { run_a, run_b } => handle_diff(cli.dir, &run_a, &run_b),
+        Commands::Checkpoint { command } => handle_checkpoint(cli.dir, command),
+        Commands::Branch {
+            checkpoint_id,
+            id,
+            note,
+        } => handle_branch(cli.dir, &checkpoint_id, id, note),
+        Commands::Lineage { run_id } => handle_lineage(cli.dir, &run_id),
     }
 }
+
 
 
 
@@ -352,6 +402,116 @@ fn handle_diff(dir: PathBuf, run_a: &str, run_b: &str) -> Result<(), String> {
 
     Ok(())
 }
+
+fn handle_checkpoint(dir: PathBuf, cmd: CheckpointCommands) -> Result<(), String> {
+    match cmd {
+        CheckpointCommands::Create { run_id, step, name } => {
+            let cp = crate::checkpoint::CheckpointManager::create_checkpoint(
+                &dir,
+                &run_id,
+                step,
+                name,
+                serde_json::json!({"created_via": "cli"}),
+            )
+            .map_err(|e| format!("Failed to create checkpoint: {e}"))?;
+
+            println!("Created Checkpoint:");
+            println!("  Checkpoint ID: {}", cp.checkpoint_id);
+            println!("  Run ID:        {}", cp.run_id);
+            println!("  Event Step:    {}", cp.event_index);
+            println!("  Event ID:      {}", cp.event_id);
+            println!("  Name:          {}", cp.name);
+            println!("  Timestamp:     {}", cp.created_at);
+            Ok(())
+        }
+        CheckpointCommands::List { run_id } => {
+            let list = crate::checkpoint::CheckpointManager::list_checkpoints(&dir, run_id.as_deref())
+                .map_err(|e| format!("Failed to list checkpoints: {e}"))?;
+
+            if list.is_empty() {
+                println!("No checkpoints found in '{}'.", dir.display());
+                return Ok(());
+            }
+
+            println!("Checkpoints ({}):", list.len());
+            println!(
+                "  {:<16} {:<24} {:<6} {:<22} {:<20}",
+                "CHECKPOINT ID", "RUN ID", "STEP", "NAME", "CREATED AT"
+            );
+            println!("  {}", "-".repeat(88));
+
+            for cp in list {
+                println!(
+                    "  {:<16} {:<24} {:<6} {:<22} {:<20}",
+                    cp.checkpoint_id, cp.run_id, cp.event_index, cp.name, cp.created_at
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn handle_branch(
+    dir: PathBuf,
+    checkpoint_id: &str,
+    new_run_id: Option<String>,
+    note: String,
+) -> Result<(), String> {
+    let branch = crate::checkpoint::CheckpointManager::branch_from_checkpoint(
+        &dir,
+        checkpoint_id,
+        new_run_id,
+        serde_json::json!({"note": note}),
+    )
+    .map_err(|e| format!("Failed to branch from checkpoint: {e}"))?;
+
+    println!("Created Branch Run:");
+    println!("  Branch Run ID: {}", branch.run_id());
+    println!("  Checkpoint:    {}", checkpoint_id);
+    println!("  Status:        {}", branch.status());
+    println!("  Storage File:  {}", branch.storage_path().display());
+    Ok(())
+}
+
+fn handle_lineage(dir: PathBuf, run_id: &str) -> Result<(), String> {
+    let report = crate::checkpoint::CheckpointManager::inspect_lineage(&dir, run_id)
+        .map_err(|e| format!("Failed to inspect lineage: {e}"))?;
+
+    println!("Execution Lineage for '{}':", report.target_run_id);
+    println!("  Ancestor Chain ({} nodes):", report.chain.len());
+
+    for (i, node) in report.chain.iter().enumerate() {
+        let is_target = node.run_id == report.target_run_id;
+        let marker = if is_target { "-->" } else { "   " };
+
+        let role = if node.parent_run_id.is_none() {
+            "root run"
+        } else {
+            "branch"
+        };
+
+        println!(
+            "  {} [{}] {} ({}, {}, {} events)",
+            marker,
+            i + 1,
+            node.run_id,
+            role,
+            node.status,
+            node.event_count
+        );
+
+        if let (Some(cp), Some(fork_step)) = (&node.checkpoint_id, node.fork_event_index) {
+            println!("         └─ Forked at Checkpoint '{}' (Step {})", cp, fork_step);
+        }
+    }
+
+    println!(
+        "\n  Total Effective Events in Reconstructed History: {}",
+        report.total_effective_events
+    );
+    Ok(())
+}
+
 
 
 

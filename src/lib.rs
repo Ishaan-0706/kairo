@@ -1,3 +1,4 @@
+pub mod checkpoint;
 pub mod cli;
 pub mod compare;
 pub mod event;

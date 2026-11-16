@@ -162,4 +162,64 @@ fn test_cli_diff_command() {
     let _ = fs::remove_dir_all(dir);
 }
 
+#[test]
+fn test_cli_checkpoint_branch_and_lineage_commands() {
+    let dir = temp_cli_dir("cli_cp_branch");
+    let file_root = dir.join("run-cli-root.jsonl");
+
+    // 1. Create a root run with 3 events
+    let mut root = Run::start_with_id("run-cli-root", &file_root, serde_json::json!({"agent": "main"})).unwrap();
+    root.record(kairo::event::EventType::ToolStarted, serde_json::json!({"cmd": "init"})).unwrap();
+    root.complete(serde_json::json!({"res": "ok"})).unwrap();
+
+    // 2. Create checkpoint via CLI at step 2
+    let cp_cli = Cli {
+        dir: dir.clone(),
+        command: Commands::Checkpoint {
+            command: kairo::cli::CheckpointCommands::Create {
+                run_id: "run-cli-root".to_string(),
+                step: 2,
+                name: "after-init".to_string(),
+            },
+        },
+    };
+    assert!(run_cli(cp_cli).is_ok());
+
+    // 3. List checkpoints
+    let list_cli = Cli {
+        dir: dir.clone(),
+        command: Commands::Checkpoint {
+            command: kairo::cli::CheckpointCommands::List { run_id: None },
+        },
+    };
+    assert!(run_cli(list_cli).is_ok());
+
+    let checkpoints = kairo::checkpoint::CheckpointManager::list_checkpoints(&dir, None).unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    let cp_id = checkpoints[0].checkpoint_id.clone();
+
+    // 4. Branch from checkpoint via CLI
+    let branch_cli = Cli {
+        dir: dir.clone(),
+        command: Commands::Branch {
+            checkpoint_id: cp_id,
+            id: Some("run-cli-branch".to_string()),
+            note: "experiment 1".to_string(),
+        },
+    };
+    assert!(run_cli(branch_cli).is_ok());
+
+    // 5. Inspect lineage via CLI
+    let lineage_cli = Cli {
+        dir: dir.clone(),
+        command: Commands::Lineage {
+            run_id: "run-cli-branch".to_string(),
+        },
+    };
+    assert!(run_cli(lineage_cli).is_ok());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+
 
